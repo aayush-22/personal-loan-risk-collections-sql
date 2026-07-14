@@ -38,14 +38,6 @@ In `pl.Loan`:
 
 Therefore, one application may be connected to multiple loan records.
 
-```sql
-SELECT
-    COUNT(*) AS total_rows,
-    COUNT(DISTINCT loan_id) AS distinct_loan_count,
-    COUNT(DISTINCT application_id) AS distinct_application_count
-FROM pl.Loan;
-```
-
 ---
 
 ## 3. Detecting One-to-Many Relationships
@@ -59,29 +51,26 @@ GROUP BY application_id
 HAVING COUNT(*) > 1;
 ```
 
-`WHERE` filters rows before aggregation. `HAVING` filters groups after aggregation.
+`WHERE` filters source rows before aggregation. `HAVING` filters grouped results after aggregation.
 
 ---
 
 ## 4. Affected Groups vs Excess Records
 
-These are separate measurements.
+These are different measurements.
 
-- `COUNT(*)` after filtering `loan_count > 1` gives the number of affected applications.
-- `SUM(loan_count - 1)` gives the number of loan rows beyond the expected one loan per application.
+- **Affected applications:** number of application IDs with more than one loan
+- **Excess records:** number of loan rows beyond the expected one loan per application
 
-Example:
-
-| Application | Loan count | Excess records |
-|---|---:|---:|
-| A101 | 2 | 1 |
-| A102 | 4 | 3 |
-
-Affected applications = 2, but excess records = 4.
+```sql
+SUM(loan_count - 1)
+```
 
 ---
 
 ## 5. CTE for Multi-Level Aggregation
+
+A CTE can first calculate one row per application and then support an outer summary.
 
 ```sql
 WITH Loan_Count AS
@@ -100,4 +89,207 @@ FROM Loan_Count
 WHERE loan_count > 1;
 ```
 
-The CTE first creates one row per application. The outer query then summarizes those application-level results.
+---
+
+## 6. Choosing a Join from the Business Requirement
+
+### Application-side `LEFT JOIN`
+
+Use an application-side `LEFT JOIN` when every application must remain visible, including applications with no loan.
+
+```text
+All applications
++ matching loans where available
+```
+
+### `FULL OUTER JOIN`
+
+Use a `FULL OUTER JOIN` when reconciliation must retain unmatched records from both systems.
+
+```text
+Applications without loans
++ matched records
++ loans without applications
+```
+
+A join should be chosen based on the population the business wants to preserve.
+
+---
+
+## 7. Join Row Multiplication
+
+A join can return more rows than the driving table when one source row matches multiple target rows.
+
+In this dataset:
+
+```text
+60,000 application rows
++ 147 additional rows from second loan matches
+= 60,147 LEFT JOIN rows
+```
+
+This reflects the source-data relationship and is not automatically a SQL error.
+
+---
+
+## 8. Source Presence vs Business Validity
+
+These are separate classification layers.
+
+### Source-system presence
+
+```text
+MATCHED
+APPLICATION_ONLY
+LOAN_ONLY
+```
+
+This answers:
+
+> In which source systems does the record exist?
+
+### Booking business rule
+
+```text
+APPROVED_BOOKED
+APPROVED_NOT_BOOKED
+INVALID_BOOKING
+NO_BOOKING_EXPECTED
+ORPHAN_LOAN
+```
+
+This answers:
+
+> Does the existence or absence of the booking agree with the application decision?
+
+A rejected application with a loan is technically `MATCHED` but is a business-level `INVALID_BOOKING`.
+
+---
+
+## 9. Select the Shared Business Key from Both Systems
+
+In reconciliation queries, select both versions of a common key.
+
+```sql
+LA.application_id,
+L.application_id AS loan_application_id
+```
+
+For an orphan loan:
+
+- application-side `application_id` is `NULL`
+- loan-side `loan_application_id` is populated
+
+This makes the invalid source reference visible.
+
+---
+
+## 10. CASE Expression Priority
+
+A searched `CASE` returns the result from the **first true condition**.
+
+Therefore, overlapping exceptions need an agreed business priority.
+
+Current priority:
+
+```text
+1. CUSTOMER_MISMATCH
+2. DUPLICATE_BOOKING
+3. AMOUNT_MISMATCH
+4. BOOKED_BEFORE_DECISION
+5. VALID_BOOKING
+```
+
+Structural conditions such as orphan loans and missing bookings are evaluated before booking-detail exceptions.
+
+---
+
+## 11. Independent Flags vs Final Status
+
+### Independent exception flags
+
+```text
+customer_mismatch_flag
+duplicate_booking_flag
+amount_mismatch_flag
+booked_before_decision_flag
+```
+
+One row may have several flags equal to `1`.
+
+### Priority-based final status
+
+```text
+final_reconciliation_status
+```
+
+Each row receives exactly one final category.
+
+This design preserves all defects while producing a mutually exclusive management summary.
+
+---
+
+## 12. Raw Flag Counts vs Final-Status Counts
+
+Raw flag totals may overlap.
+
+Example:
+
+| Customer mismatch | Duplicate booking | Final status |
+|---:|---:|---|
+| 1 | 1 | `CUSTOMER_MISMATCH` |
+
+The row contributes once to each raw flag total but only once to the final status.
+
+Current result:
+
+```text
+Raw flag occurrences = 773
+Priority-based booking-detail exception rows = 767
+Difference = 6 overlapping occurrences
+```
+
+The difference does not necessarily represent six rows. One row with three flags creates two additional occurrences.
+
+---
+
+## 13. Joined-Row Count vs Distinct Application Count
+
+The reconciliation result remains at application-loan joined-row grain.
+
+Therefore:
+
+```text
+DUPLICATE_BOOKING rows
+≠
+distinct applications with duplicate bookings
+```
+
+Business reporting may require all three:
+
+- affected joined rows
+- distinct affected applications
+- excess loan records
+
+---
+
+## 14. Control Totals
+
+A professional reconciliation should verify that related summaries tie back to one another.
+
+Examples from this project:
+
+```text
+MATCHED + APPLICATION_ONLY + LOAN_ONLY
+= total FULL OUTER JOIN rows
+```
+
+and:
+
+```text
+VALID_BOOKING
++ all approved-booked exception statuses
+= APPROVED_BOOKED rows
+```
+
+Control totals help detect missing classifications, accidental filters, and row multiplication errors.
