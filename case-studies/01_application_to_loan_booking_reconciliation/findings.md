@@ -6,7 +6,7 @@ Application-to-Loan Booking Reconciliation
 
 ## Current Stage
 
-Base reconciliation, source-presence classification, booking-rule classification, and booking-detail exception flags completed.
+Base reconciliation, business-rule classification, detailed exception flags, and exception-overlap analysis completed.
 
 ---
 
@@ -106,14 +106,6 @@ Distinct matched applications:
 = 32,594 distinct matched applications
 ```
 
-Application-only control:
-
-```text
-60,000 total applications
-- 32,594 applications with at least one loan
-= 27,406
-```
-
 ---
 
 ## 6. Booking Business-Rule Classification
@@ -133,22 +125,6 @@ Interpretation:
 - `INVALID_BOOKING`: rejected, cancelled, or pending application has a loan
 - `NO_BOOKING_EXPECTED`: non-approved application correctly has no loan
 - `ORPHAN_LOAN`: booking references an application absent from origination
-
-Approved-application control:
-
-```text
-33,000 approved applications
-- 492 approved applications without a loan
-= 32,508 distinct approved applications with a loan
-```
-
-Approved-booked row control:
-
-```text
-32,508 distinct approved applications with a loan
-+ 147 additional duplicate rows
-= 32,655 approved-booked rows
-```
 
 ---
 
@@ -222,45 +198,143 @@ Priority-based booking-detail exception rows:
 130 + 293 + 254 + 90 = 767
 ```
 
-Overlap difference:
+Difference:
 
 ```text
 773 - 767 = 6 additional exception occurrences
 ```
 
-Raw flags overlap, while final statuses are mutually exclusive.
+---
 
-Confirmed effects of priority:
+## 10. Exception-Count Distribution
 
-- One duplicate-booking flag occurrence is classified under `CUSTOMER_MISMATCH`.
-- Three amount-mismatch flag occurrences are classified under higher-priority statuses.
-- Two booked-before-decision flag occurrences are classified under higher-priority statuses.
+The four binary exception flags were added for each `APPROVED_BOOKED` row.
 
-The exact combinations remain to be profiled.
+| Exception count | Row count | Interpretation |
+|---:|---:|---|
+| 0 | 31,888 | No booking-detail defect |
+| 1 | 761 | Exactly one defect |
+| 2 | 6 | Two simultaneous defects |
+| 3 | 0 | No rows |
+| 4 | 0 | No rows |
+| **Total** | **32,655** | Full approved-booked population |
+
+Population control:
+
+```text
+31,888 + 761 + 6 = 32,655
+```
+
+Weighted flag control:
+
+```text
+0 × 31,888
++ 1 × 761
++ 2 × 6
+= 773 raw exception occurrences
+```
+
+The controls match the earlier approved-booked population and raw flag totals.
 
 ---
 
-## 10. Date Observation
+## 11. Booking-Detail Quality Rates
+
+### Valid booking-detail rate
 
 ```text
-Earliest application date: 2024-01-01
-Earliest booking date:     2023-12-31
+31,888 ÷ 32,655 × 100
+≈ 97.65%
 ```
 
-The detailed rule identified 92 raw `booked_before_decision` occurrences. After higher-priority exceptions were applied, 90 rows remained in the final `BOOKED_BEFORE_DECISION` category.
+### Booking-detail exception rate
+
+Rows with at least one defect:
+
+```text
+761 + 6 = 767
+```
+
+```text
+767 ÷ 32,655 × 100
+≈ 2.35%
+```
+
+These rates apply only to the `APPROVED_BOOKED` population and do not include approved-not-booked, invalid bookings, or orphan loans.
 
 ---
 
-## 11. Next Step
+## 12. Multi-Defect Rows
 
-Calculate the number of exception flags per approved-booked row and summarize:
+Exactly six approved-booked rows have two simultaneous defects.
+
+| Application ID | Loan ID | Exception combination |
+|---:|---:|---|
+| 2008251 | 3004494 | `CUSTOMER_MISMATCH + AMOUNT_MISMATCH` |
+| 2013020 | 3007063 | `CUSTOMER_MISMATCH + BOOKED_BEFORE_DECISION` |
+| 2015028 | 3008155 | `CUSTOMER_MISMATCH + DUPLICATE_BOOKING` |
+| 2039112 | 3021198 | `DUPLICATE_BOOKING + AMOUNT_MISMATCH` |
+| 2040128 | 3021754 | `CUSTOMER_MISMATCH + AMOUNT_MISMATCH` |
+| 2056729 | 3030754 | `DUPLICATE_BOOKING + BOOKED_BEFORE_DECISION` |
+
+No row has three or four simultaneous booking-detail defects.
+
+---
+
+## 13. Multi-Defect Combination Findings
+
+Five distinct two-defect combinations were identified:
+
+| Exception combination | Rows |
+|---|---:|
+| `CUSTOMER_MISMATCH + AMOUNT_MISMATCH` | 2 |
+| `CUSTOMER_MISMATCH + BOOKED_BEFORE_DECISION` | 1 |
+| `CUSTOMER_MISMATCH + DUPLICATE_BOOKING` | 1 |
+| `DUPLICATE_BOOKING + AMOUNT_MISMATCH` | 1 |
+| `DUPLICATE_BOOKING + BOOKED_BEFORE_DECISION` | 1 |
+| **Total** | **6** |
+
+The final combination-level aggregation query has not yet been completed in the active-learning exercise, but the detailed rows already establish these counts.
+
+---
+
+## 14. Why the Earlier Overlap Difference Equals Six
+
+Earlier:
 
 ```text
-0 exceptions
-1 exception
-2 exceptions
-3 exceptions
-4 exceptions
+Raw exception occurrences = 773
+Unique defective rows      = 767
+Difference                 = 6
 ```
 
-This will quantify single-defect and multi-defect records.
+The exception-count analysis proved that:
+
+- exactly six rows have two flags
+- no row has more than two flags
+
+Each two-defect row contributes one additional raw occurrence beyond its one unique-row count.
+
+```text
+6 rows × 1 additional occurrence = 6
+```
+
+---
+
+## 15. Next Step
+
+Complete the combination-level management summary using:
+
+```text
+exception_combination
+row_count
+```
+
+After that, continue with:
+
+- distinct affected-application counts
+- exception-level financial exposure
+- monthly, channel, branch, and product segmentation
+- management summary
+- reusable reconciliation object
+- Power BI dashboard

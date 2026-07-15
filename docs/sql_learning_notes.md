@@ -249,7 +249,7 @@ Priority-based booking-detail exception rows = 767
 Difference = 6 overlapping occurrences
 ```
 
-The difference does not necessarily represent six rows. One row with three flags creates two additional occurrences.
+The difference does not necessarily represent six rows unless the maximum exception count per row is also checked.
 
 ---
 
@@ -277,7 +277,7 @@ Business reporting may require all three:
 
 A professional reconciliation should verify that related summaries tie back to one another.
 
-Examples from this project:
+Examples:
 
 ```text
 MATCHED + APPLICATION_ONLY + LOAN_ONLY
@@ -288,8 +288,161 @@ and:
 
 ```text
 VALID_BOOKING
-+ all approved-booked exception statuses
++ approved-booked exception statuses
 = APPROVED_BOOKED rows
 ```
 
 Control totals help detect missing classifications, accidental filters, and row multiplication errors.
+
+---
+
+## 15. Counting Exceptions by Adding Binary Flags
+
+When each exception flag contains only `0` or `1`, the total number of exceptions on a row can be calculated by adding the flags.
+
+```sql
+COALESCE(customer_mismatch_flag, 0)
++ COALESCE(duplicate_booking_flag, 0)
++ COALESCE(amount_mismatch_flag, 0)
++ COALESCE(booked_before_decision_flag, 0)
+    AS exception_count
+```
+
+Examples:
+
+```text
+0 + 0 + 0 + 0 = 0 exceptions
+1 + 0 + 0 + 0 = 1 exception
+1 + 1 + 0 + 0 = 2 exceptions
+```
+
+This is better than writing a long `CASE` statement for every possible flag combination.
+
+With four binary flags, there can be:
+
+```text
+2⁴ = 16 possible combinations
+```
+
+Adding the flags handles all combinations automatically.
+
+---
+
+## 16. Why `COALESCE(flag, 0)` Is Used
+
+Arithmetic with `NULL` returns `NULL`.
+
+For example:
+
+```text
+1 + NULL + 0 + 0 = NULL
+```
+
+Using:
+
+```sql
+COALESCE(flag, 0)
+```
+
+converts any unexpected `NULL` flag to `0`, allowing the row-level exception count to remain numeric.
+
+---
+
+## 17. Exception-Count Distribution
+
+The approved-booked population was summarized by `exception_count`.
+
+| Exception count | Meaning |
+|---:|---|
+| 0 | No booking-detail defect |
+| 1 | Exactly one defect |
+| 2 | Two simultaneous defects |
+| 3 | Three simultaneous defects |
+| 4 | All four defects |
+
+Two controls were used:
+
+```text
+Sum of row_count
+= full APPROVED_BOOKED population
+```
+
+and:
+
+```text
+SUM(exception_count × row_count)
+= total raw exception occurrences
+```
+
+This validates both the number of rows and the number of raised flags.
+
+---
+
+## 18. Dynamic Exception Labels with `CONCAT_WS`
+
+A readable exception combination can be built dynamically using conditional labels and `CONCAT_WS`.
+
+```sql
+CONCAT_WS
+(
+    ' + ',
+
+    CASE
+        WHEN customer_mismatch_flag = 1
+            THEN 'CUSTOMER_MISMATCH'
+    END,
+
+    CASE
+        WHEN duplicate_booking_flag = 1
+            THEN 'DUPLICATE_BOOKING'
+    END,
+
+    CASE
+        WHEN amount_mismatch_flag = 1
+            THEN 'AMOUNT_MISMATCH'
+    END,
+
+    CASE
+        WHEN booked_before_decision_flag = 1
+            THEN 'BOOKED_BEFORE_DECISION'
+    END
+) AS exception_combination
+```
+
+`CONCAT_WS`:
+
+- uses the supplied separator
+- ignores `NULL` values
+- avoids unnecessary separators
+- builds labels without defining every possible combination manually
+
+Example:
+
+```text
+Flags: 1, 0, 1, 0
+
+Result:
+CUSTOMER_MISMATCH + AMOUNT_MISMATCH
+```
+
+A `CASE` expression without an `ELSE` returns `NULL` when its condition is false, which works well with `CONCAT_WS`.
+
+---
+
+## 19. Single-Defect vs Multi-Defect Rows
+
+The exception-count analysis separates:
+
+```text
+Rows with no defect
+Rows with exactly one defect
+Rows with multiple simultaneous defects
+```
+
+This is useful because multi-defect rows may represent deeper process or integration failures than isolated exceptions.
+
+In the current dataset:
+
+- 761 approved-booked rows have exactly one booking-detail defect
+- 6 approved-booked rows have exactly two defects
+- no rows have three or four defects
